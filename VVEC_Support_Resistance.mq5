@@ -432,8 +432,10 @@ int OnCalculate(const int       rates_total,
    {
       // Полный пересчёт
       SExtremum extremums[];
-      const long &vol[] = UseTickVolume ? tick_volume : volume;
-      FindExtremums(high, low, vol, rates_total, extremums);
+      if(UseTickVolume)
+         FindExtremums(high, low, tick_volume, rates_total, extremums);
+      else
+         FindExtremums(high, low, volume, rates_total, extremums);
       
       // Сохраняем старые last_touch_bar для "омоложения"
       SLevel oldLevels[];
