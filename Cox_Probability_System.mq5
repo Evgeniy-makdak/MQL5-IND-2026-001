@@ -6,7 +6,7 @@
 //+------------------------------------------------------------------+
 #property copyright     "Copyright 2026, Evgeniy Acteck"
 #property link          "https://github.com/Evgeniy-makdak/MQL5-IND-2026-001"
-#property version       "1.0"
+#property version       "1.1"
 #property description   "Cox Probability System (CPS) — байесовский индикатор вероятности"
 #property description   "с энтропийным фильтром Шеннона."
 #property description   "Не даёт торговых сигналов. Только визуализация."
@@ -38,8 +38,10 @@
 input group "=== Основные параметры ==="
 input int      LookbackBars          = 200;            // Количество баров для априорных вероятностей (50–1000)
 input int      SmoothingPeriod       = 14;             // Период сглаживания линий SMA (5–50)
-input double   EntropyThreshold      = 0.65;           // Порог энтропии: сигнал разрешён при Entropy < этого (0.1–1.0)
-input double   MinProbabilityToTrade = 0.65;           // Минимальная пост-байесовская вероятность для сделки (0.51–0.95)
+input double   EntropyThreshold      = 0.85;           // Порог энтропии: сигнал разрешён при Entropy < этого (0.1–1.0)
+                                                        // Подобрано для баланса: при MinProbabilityToTrade=0.70 фильтр пропускает
+                                                        // уверенные тренды (H~0.81 при p=0.75), но блокирует слабые сигналы.
+input double   MinProbabilityToTrade = 0.70;           // Минимальная пост-байесовская вероятность для сделки (0.51–0.95)
 input int      UpdateIntervalTicks   = 50;             // Интервал полного пересчёта в тиках (10–500)
 
 input group "=== Визуализация ==="
@@ -263,41 +265,58 @@ void UpdateBackground(const datetime &time[],
 }
 
 //+------------------------------------------------------------------+
-//| UpdateLabel — текстовая метка в левом верхнем углу                 |
+//| Создание или обновление одной текстовой метки                      |
+//+------------------------------------------------------------------+
+void CreateOrUpdateLabel(string suffix, string text, int yOffset, color clr)
+{
+   string name = g_prefix + "Label_" + suffix;
+   if(ObjectFind(0, name) < 0)
+   {
+      if(!ObjectCreate(0, name, OBJ_LABEL, g_subWindow, 0, 0))
+         return;
+   }
+   ObjectSetString(0,  name, OBJPROP_TEXT,     text);
+   ObjectSetInteger(0, name, OBJPROP_CORNER,   CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, 5);
+   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, yOffset);
+   ObjectSetInteger(0, name, OBJPROP_COLOR,    clr);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE,  9);
+   ObjectSetString(0,  name, OBJPROP_FONT,     "Arial");
+}
+
+//+------------------------------------------------------------------+
+//| UpdateLabel — текстовые метки в левом верхнем углу (4 строки)      |
 //+------------------------------------------------------------------+
 void UpdateLabel(double rawEntropy, double rawSignal)
 {
-   string labelName = g_prefix + "Label";
-
-   if(ObjectFind(0, labelName) < 0)
-   {
-      if(!ObjectCreate(0, labelName, OBJ_LABEL, g_subWindow, 0, 0))
-         return;
-   }
-
-   // Trade allowed: YES если (энтропия < порога) И
-   // (P_up >= MinProbabilityToTrade ИЛИ P_down >= MinProbabilityToTrade)
+   //--- Определяем, разрешена ли торговля
    string tradeAllowed = "NO";
+   color  tradeColor   = clrDarkRed; // Красный для NO
    if(rawEntropy < EntropyThreshold)
    {
       double P_down = 1.0 - rawSignal;
       if(rawSignal >= MinProbabilityToTrade || P_down >= MinProbabilityToTrade)
+      {
          tradeAllowed = "YES";
+         tradeColor   = clrDarkGreen; // Тёмно-зелёный для YES
+      }
    }
 
-   string text = "Cox System | Entropy RAW: " +
-                 DoubleToString(rawEntropy, 2) +
-                 " | Signal: " +
-                 DoubleToString(rawSignal, 2) +
-                 " | Trade allowed: " + tradeAllowed;
+   //--- Строка 1: Название системы
+   CreateOrUpdateLabel("Title", "Cox Probability System v1.1", 5, clrNavy);
 
-   ObjectSetString(0,  labelName, OBJPROP_TEXT,     text);
-   ObjectSetInteger(0, labelName, OBJPROP_CORNER,   CORNER_LEFT_UPPER);
-   ObjectSetInteger(0, labelName, OBJPROP_XDISTANCE, 5);
-   ObjectSetInteger(0, labelName, OBJPROP_YDISTANCE, 5);
-   ObjectSetInteger(0, labelName, OBJPROP_COLOR,    clrWhite);
-   ObjectSetInteger(0, labelName, OBJPROP_FONTSIZE,  9);
-   ObjectSetString(0,  labelName, OBJPROP_FONT,     "Arial");
+   //--- Строка 2: Энтропия
+   string entropyText = "Entropy RAW: " + DoubleToString(rawEntropy, 2) +
+                        " | Threshold: " + DoubleToString(EntropyThreshold, 2);
+   CreateOrUpdateLabel("Entropy", entropyText, 30, clrNavy);
+
+   //--- Строка 3: Сигнал
+   string signalText = "Signal: " + DoubleToString(rawSignal, 2) +
+                       " | MinProb: " + DoubleToString(MinProbabilityToTrade, 2);
+   CreateOrUpdateLabel("Signal", signalText, 55, clrNavy);
+
+   //--- Строка 4: Разрешение торговли (цветной статус)
+   CreateOrUpdateLabel("Trade", "Trade allowed: " + tradeAllowed, 80, tradeColor);
 }
 
 //+------------------------------------------------------------------+
@@ -358,8 +377,8 @@ int OnInit()
    IndicatorSetInteger(INDICATOR_LEVELSTYLE,  2, STYLE_DASH);
    IndicatorSetInteger(INDICATOR_LEVELWIDTH,  2, 1);
 
-   //--- Короткое имя индикатора
-   IndicatorSetString(INDICATOR_SHORTNAME, "Cox Probability System");
+   //--- Убираем стандартный заголовок индикатора, чтобы не перекрывал текстовые метки
+   IndicatorSetString(INDICATOR_SHORTNAME, "");
 
    //--- Определяем подокно
    g_subWindow = ChartWindowFind();
@@ -376,8 +395,11 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
-   //--- Удаляем текстовую метку
-   ObjectDelete(0, g_prefix + "Label");
+   //--- Удаляем текстовые метки (4 строки)
+   ObjectDelete(0, g_prefix + "Label_Title");
+   ObjectDelete(0, g_prefix + "Label_Entropy");
+   ObjectDelete(0, g_prefix + "Label_Signal");
+   ObjectDelete(0, g_prefix + "Label_Trade");
 
    //--- Удаляем все прямоугольники фона
    int totalObjs = ObjectsTotal(0, g_subWindow, -1);
