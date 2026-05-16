@@ -20,7 +20,9 @@
 input group "=== Параметры поиска экстремумов ==="
 input int      ExtremaDepth           = 5;              // Глубина экстремума (плечо, баров слева/справа)
 input double   ClusterPriceGap        = 0.0025;         // Макс. расстояние между экстремумами в кластере (абс. цена)
-input int      MinClusterSize         = 3;              // Мин. кол-во экстремумов в кластере для отрисовки
+input int      MinClusterSize         = 3;              // Мин. кол-во экстремумов для формирования кластера
+input int      StrongMinTouches       = 5;              // Мин. касаний для значимого (сильного) уровня
+input bool     ShowOnlyStrongLevels   = true;           // Показывать только значимые уровни (убирает мусор)
 
 input group "=== Фильтр объёма ==="
 input int      VolumeThresholdPercentile = 80;          // Процентиль объёма для верификации (60–95)
@@ -229,14 +231,19 @@ void ClusterOneType(SExtremum &arr[], bool isSupport, long volThreshold, SLevel 
       }
    }
    
-   // Фильтрация по MinClusterSize и объёму, добавление в outLevels
+   // Фильтрация: уровень считается значимым только при одновременном выполнении:
+   // 1) достаточно касаний (>= StrongMinTouches)
+   // 2) подтверждён объёмом (если UseTickVolume = true)
    for(int i = 0; i < lCount; i++)
    {
-      bool volOK = (tmpLevels[i].max_volume >= volThreshold) || !UseTickVolume;
-      bool countOK = tmpLevels[i].touch_count >= MinClusterSize;
-      tmpLevels[i].is_strong = volOK || countOK;
+      bool volOK  = !UseTickVolume || (tmpLevels[i].max_volume >= volThreshold);
+      bool countOK = tmpLevels[i].touch_count >= StrongMinTouches;
+      tmpLevels[i].is_strong = volOK && countOK;
       
-      if(tmpLevels[i].touch_count >= MinClusterSize || tmpLevels[i].is_strong)
+      // Показываем либо все уровни с мин. касаниями, либо только сильные
+      bool showThis = ShowOnlyStrongLevels ? tmpLevels[i].is_strong
+                                           : (tmpLevels[i].touch_count >= MinClusterSize);
+      if(showThis)
       {
          int idx = ArraySize(outLevels);
          ArrayResize(outLevels, idx + 1);
@@ -307,7 +314,9 @@ void DeleteAllObjects()
 }
 
 //+------------------------------------------------------------------+
-//| Отрисовка уровней                                                |
+//| Отрисовка уровней с фильтром близости                            |
+//| Уровни сортируются по убыванию силы (touch_count).               |
+//| Если уровень ближе MinLevelGap к уже отрисованному — пропускается|
 //+------------------------------------------------------------------+
 void DrawLevels(int current_bar)
 {
@@ -320,23 +329,74 @@ void DrawLevels(int current_bar)
          ObjectDelete(0, name);
    }
    
-   // Рисуем активные уровни
    int n = ArraySize(g_levels);
+   if(n == 0) return;
+   
+   // Собираем индексы активных уровней
+   int indices[];
+   int activeCount = 0;
    for(int i = 0; i < n; i++)
    {
-      if(!g_levels[i].is_active) continue;
+      if(g_levels[i].is_active)
+      {
+         ArrayResize(indices, activeCount + 1);
+         indices[activeCount++] = i;
+      }
+   }
+   if(activeCount == 0) return;
+   
+   // Сортируем по убыванию touch_count (сильные первыми)
+   for(int i = 0; i < activeCount - 1; i++)
+   {
+      for(int j = i + 1; j < activeCount; j++)
+      {
+         if(g_levels[indices[i]].touch_count < g_levels[indices[j]].touch_count)
+         {
+            int tmp = indices[i];
+            indices[i] = indices[j];
+            indices[j] = tmp;
+         }
+      }
+   }
+   
+   // Минимальное расстояние между отображаемыми уровнями
+   double minGap = ClusterPriceGap * 1.5;
+   
+   // Массивы для отслеживания уже отрисованных цен
+   double drawnSup[], drawnRes[];
+   int sDrawn = 0, rDrawn = 0;
+   
+   // Рисуем, пропуская слишком близкие
+   for(int k = 0; k < activeCount; k++)
+   {
+      int i = indices[k];
+      bool isSup = g_levels[i].is_support;
+      double price = g_levels[i].price;
       
+      // Проверяем близость к уже отрисованным уровням того же типа
+      bool tooClose = false;
+      if(isSup)
+      {
+         for(int d = 0; d < sDrawn; d++)
+            if(MathAbs(price - drawnSup[d]) < minGap) { tooClose = true; break; }
+      }
+      else
+      {
+         for(int d = 0; d < rDrawn; d++)
+            if(MathAbs(price - drawnRes[d]) < minGap) { tooClose = true; break; }
+      }
+      if(tooClose) continue;
+      
+      // Рисуем уровень
       string lineName = g_prefix + "LVL_" + IntegerToString(i);
       string txtName  = g_prefix + "TXT_" + IntegerToString(i);
+      color clr = isSup ? SupportColor : ResistanceColor;
       
-      color clr = g_levels[i].is_support ? SupportColor : ResistanceColor;
-      
-      // Создаём/обновляем горизонтальную линию
       if(ObjectFind(0, lineName) < 0)
-         if(!ObjectCreate(0, lineName, OBJ_HLINE, 0, 0, g_levels[i].price))
+         if(!ObjectCreate(0, lineName, OBJ_HLINE, 0, 0, price))
             continue;
       
-      ObjectSetDouble(0, lineName, OBJPROP_PRICE, g_levels[i].price);
+      ObjectSetDouble(0, lineName, OBJPROP_PRICE, price);
       ObjectSetInteger(0, lineName, OBJPROP_COLOR, clr);
       ObjectSetInteger(0, lineName, OBJPROP_STYLE, (ENUM_LINE_STYLE)LineStyle);
       ObjectSetInteger(0, lineName, OBJPROP_WIDTH, LineWidth);
@@ -346,20 +406,32 @@ void DrawLevels(int current_bar)
       // Текст силы уровня
       if(ShowLevelStrength)
       {
-         string prefix = g_levels[i].is_support ? "S" : "R";
+         string prefix = isSup ? "S" : "R";
          string suffix = g_levels[i].is_strong ? "v" : "";
          string txt = prefix + ":" + IntegerToString(g_levels[i].touch_count) + suffix;
          
          datetime timeRight = TimeCurrent() + PeriodSeconds() * 10;
          
          if(ObjectFind(0, txtName) < 0)
-            if(!ObjectCreate(0, txtName, OBJ_TEXT, 0, timeRight, g_levels[i].price))
+            if(!ObjectCreate(0, txtName, OBJ_TEXT, 0, timeRight, price))
                continue;
          
          ObjectSetString(0, txtName, OBJPROP_TEXT, txt);
          ObjectSetInteger(0, txtName, OBJPROP_COLOR, clr);
          ObjectSetInteger(0, txtName, OBJPROP_FONTSIZE, 8);
          ObjectSetInteger(0, txtName, OBJPROP_ANCHOR, ANCHOR_LEFT_LOWER);
+      }
+      
+      // Запоминаем отрисованную цену
+      if(isSup)
+      {
+         ArrayResize(drawnSup, sDrawn + 1);
+         drawnSup[sDrawn++] = price;
+      }
+      else
+      {
+         ArrayResize(drawnRes, rDrawn + 1);
+         drawnRes[rDrawn++] = price;
       }
    }
 }
@@ -372,7 +444,7 @@ int OnInit()
    g_prefix = "VVEC_";
    g_tickCounter = 0;
    g_prevCalculated = 0;
-   
+
    ArrayResize(g_levels, 0);
    
    return(INIT_SUCCEEDED);
