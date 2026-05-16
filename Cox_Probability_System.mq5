@@ -360,8 +360,8 @@ int OnInit()
    PlotIndexSetInteger(1, PLOT_LINE_STYLE, STYLE_SOLID);
    PlotIndexSetInteger(1, PLOT_LINE_WIDTH, 1);
 
-   //--- Горизонтальные уровни (3 шт.)
-   IndicatorSetInteger(INDICATOR_LEVELS, 3);
+   //--- Горизонтальные уровни (4 шт.)
+   IndicatorSetInteger(INDICATOR_LEVELS, 4);
 
    // Уровень 0: MinProbabilityToTrade (зелёный пунктир)
    IndicatorSetDouble(INDICATOR_LEVELVALUE,  0, MinProbabilityToTrade);
@@ -380,6 +380,12 @@ int OnInit()
    IndicatorSetInteger(INDICATOR_LEVELCOLOR,  2, clrRed);
    IndicatorSetInteger(INDICATOR_LEVELSTYLE,  2, STYLE_DASH);
    IndicatorSetInteger(INDICATOR_LEVELWIDTH,  2, 1);
+
+   // Уровень 3: зона продаж 0.30 (тёмно-красный пунктир, симметрично MinProbabilityToTrade)
+   IndicatorSetDouble(INDICATOR_LEVELVALUE,  3, 1.0 - MinProbabilityToTrade);
+   IndicatorSetInteger(INDICATOR_LEVELCOLOR,  3, clrCrimson);
+   IndicatorSetInteger(INDICATOR_LEVELSTYLE,  3, STYLE_DASH);
+   IndicatorSetInteger(INDICATOR_LEVELWIDTH,  3, 1);
 
    //--- Убираем стандартный заголовок индикатора, чтобы не перекрывал текстовые метки
    IndicatorSetString(INDICATOR_SHORTNAME, "");
