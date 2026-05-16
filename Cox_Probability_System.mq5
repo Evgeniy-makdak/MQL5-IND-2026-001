@@ -375,11 +375,12 @@ int OnInit()
    IndicatorSetInteger(INDICATOR_LEVELSTYLE,  1, STYLE_SOLID);
    IndicatorSetInteger(INDICATOR_LEVELWIDTH,  1, 1);
 
-   // Уровень 2: EntropyThreshold (красный пунктир)
+   // Уровень 2: EntropyThreshold (красная ТОЛСТАЯ СПЛОШНАЯ линия — "стена энтропии")
+   // Отличается от остальных уровней, чтобы визуально подчеркнуть: это фильтр, а не зона входа.
    IndicatorSetDouble(INDICATOR_LEVELVALUE,  2, EntropyThreshold);
    IndicatorSetInteger(INDICATOR_LEVELCOLOR,  2, clrRed);
-   IndicatorSetInteger(INDICATOR_LEVELSTYLE,  2, STYLE_DASH);
-   IndicatorSetInteger(INDICATOR_LEVELWIDTH,  2, 1);
+   IndicatorSetInteger(INDICATOR_LEVELSTYLE,  2, STYLE_SOLID);
+   IndicatorSetInteger(INDICATOR_LEVELWIDTH,  2, 2);
 
    // Уровень 3: зона продаж 0.30 (тёмно-красный пунктир, симметрично MinProbabilityToTrade)
    IndicatorSetDouble(INDICATOR_LEVELVALUE,  3, 1.0 - MinProbabilityToTrade);
