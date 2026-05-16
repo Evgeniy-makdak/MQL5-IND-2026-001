@@ -19,7 +19,7 @@
 //+------------------------------------------------------------------+
 input group "=== Параметры поиска экстремумов ==="
 input int      ExtremaDepth           = 5;              // Глубина экстремума (плечо, баров слева/справа)
-input double   ClusterPriceGap        = 0.0025;         // Макс. расстояние между экстремумами в кластере (абс. цена)
+input int      ClusterPriceGap        = 25;             // Макс. расстояние между экстремумами (в пипсах)
 input int      MinClusterSize         = 3;              // Мин. кол-во экстремумов для формирования кластера
 input int      StrongMinTouches       = 5;              // Мин. касаний для значимого (сильного) уровня
 input bool     ShowOnlyStrongLevels   = true;           // Показывать только значимые уровни (убирает мусор)
@@ -73,6 +73,7 @@ string   g_prefix;              // Префикс имён объектов
 SLevel   g_levels[];            // Активные уровни
 int      g_tickCounter;         // Счётчик тиков
 int      g_prevCalculated;      // Предыдущее значение prev_calculated
+double   g_effectiveGap;        // Эффективный зазор в абсолютной цене (ClusterPriceGap * Point * 10)
 
 //+------------------------------------------------------------------+
 //| Вспомогательные функции                                          |
@@ -193,7 +194,7 @@ void ClusterOneType(SExtremum &arr[], bool isSupport, long volThreshold, SLevel 
       bool added = false;
       for(int j = 0; j < lCount; j++)
       {
-         if(MathAbs(arr[i].price - tmpLevels[j].price) <= ClusterPriceGap)
+         if(MathAbs(arr[i].price - tmpLevels[j].price) <= g_effectiveGap)
          {
             // Обновляем кластер
             tmpLevels[j].touch_count++;
@@ -206,7 +207,7 @@ void ClusterOneType(SExtremum &arr[], bool isSupport, long volThreshold, SLevel 
             int pCount = 0;
             for(int k = 0; k < count; k++)
             {
-               if(MathAbs(arr[k].price - tmpLevels[j].price) <= ClusterPriceGap)
+               if(MathAbs(arr[k].price - tmpLevels[j].price) <= g_effectiveGap)
                {
                   ArrayResize(prices, pCount + 1);
                   prices[pCount++] = arr[k].price;
@@ -360,7 +361,7 @@ void DrawLevels(int current_bar)
    }
    
    // Минимальное расстояние между отображаемыми уровнями
-   double minGap = ClusterPriceGap * 1.5;
+   double minGap = g_effectiveGap * 1.5;
    
    // Массивы для отслеживания уже отрисованных цен
    double drawnSup[], drawnRes[];
@@ -445,6 +446,11 @@ int OnInit()
    g_tickCounter = 0;
    g_prevCalculated = 0;
 
+   // Переводим пипсы в абсолютную цену (1 пипс = 10 * Point для 5/3 знаков)
+   g_effectiveGap = ClusterPriceGap * _Point * 10.0;
+   if(g_effectiveGap <= 0)
+      g_effectiveGap = _Point * 10.0; // защита: минимум 1 пипс
+   
    ArrayResize(g_levels, 0);
    
    return(INIT_SUCCEEDED);
@@ -524,7 +530,7 @@ int OnCalculate(const int       rates_total,
          {
             if(!oldLevels[j].is_active) continue;
             if(g_levels[i].is_support == oldLevels[j].is_support &&
-               MathAbs(g_levels[i].price - oldLevels[j].price) <= ClusterPriceGap * 1.5)
+               MathAbs(g_levels[i].price - oldLevels[j].price) <= g_effectiveGap * 1.5)
             {
                if(oldLevels[j].last_touch_bar > g_levels[i].last_touch_bar)
                   g_levels[i].last_touch_bar = oldLevels[j].last_touch_bar;
