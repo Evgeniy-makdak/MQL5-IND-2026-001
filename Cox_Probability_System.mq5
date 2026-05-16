@@ -302,21 +302,25 @@ void UpdateLabel(double rawEntropy, double rawSignal)
       }
    }
 
+   //--- Сдвигаем метки ниже, чтобы не перекрывать системный заголовок MT5
+   //    (терминал принудительно рисует значения буферов в левом верхнем углу)
+   int yBase = 30;
+
    //--- Строка 1: Название системы
-   CreateOrUpdateLabel("Title", "Cox Probability System v1.1", 5, clrNavy);
+   CreateOrUpdateLabel("Title", "Cox Probability System v1.1", yBase, clrNavy);
 
    //--- Строка 2: Энтропия
    string entropyText = "Entropy RAW: " + DoubleToString(rawEntropy, 2) +
                         " | Threshold: " + DoubleToString(EntropyThreshold, 2);
-   CreateOrUpdateLabel("Entropy", entropyText, 30, clrNavy);
+   CreateOrUpdateLabel("Entropy", entropyText, yBase + 25, clrNavy);
 
    //--- Строка 3: Сигнал
    string signalText = "Signal: " + DoubleToString(rawSignal, 2) +
                        " | MinProb: " + DoubleToString(MinProbabilityToTrade, 2);
-   CreateOrUpdateLabel("Signal", signalText, 55, clrNavy);
+   CreateOrUpdateLabel("Signal", signalText, yBase + 50, clrNavy);
 
    //--- Строка 4: Разрешение торговли (цветной статус)
-   CreateOrUpdateLabel("Trade", "Trade allowed: " + tradeAllowed, 80, tradeColor);
+   CreateOrUpdateLabel("Trade", "Trade allowed: " + tradeAllowed, yBase + 75, tradeColor);
 }
 
 //+------------------------------------------------------------------+
