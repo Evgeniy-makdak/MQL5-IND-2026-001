@@ -636,12 +636,14 @@ int OnCalculate(const int       rates_total,
       }
    }
    
-   ApplyAging(0);
+   int currentBar = rates_total - 1;  // Индекс текущего (последнего) бара
    
-   double currentPrice = (rates_total > 0) ? close[0] : 0.0;
-   PruneLevels(g_levels, 0, currentPrice);
+   ApplyAging(currentBar);
    
-   DrawLevels(0);
+   double currentPrice = (rates_total > 0) ? close[currentBar] : 0.0;
+   PruneLevels(g_levels, currentBar, currentPrice);
+   
+   DrawLevels(currentBar);
    
    return(rates_total);
 }
