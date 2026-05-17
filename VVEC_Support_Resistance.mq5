@@ -1,13 +1,14 @@
 //+------------------------------------------------------------------+
 //|                                      VVEC_Support_Resistance.mq5 |
 //|                        Copyright 2026, Evgeniy Acteck            |
-//|                        ТЗ № MQL5-IND-2026-002                    |
+//|                        ТЗ № MQL5-IND-2026-002 v2.0 ProRarefaction|
 //+------------------------------------------------------------------+
 #property copyright     "Copyright 2026, Evgeniy Acteck"
 #property link          "https://github.com/Evgeniy-makdak/MQL5-IND-2026-001"
-#property version       "1.0"
-#property description   "VVEC Support & Resistance — уровни на основе"
-#property description   "кластеризации экстремумов с верификацией объёмом."
+#property version       "2.0"
+#property description   "VVEC Support & Resistance v2.0 — ProRarefaction"
+#property description   "Уровни с 5 фильтрами прореживания, динамическим старением"
+#property description   "и экспоненциальным затуханием силы."
 
 //--- Индикатор в основном окне
 #property indicator_chart_window
@@ -21,15 +22,21 @@ input group "=== Параметры поиска экстремумов ==="
 input int      ExtremaDepth           = 5;              // Глубина экстремума (плечо, баров слева/справа)
 input int      ClusterPriceGap        = 25;             // Макс. расстояние между экстремумами (в пипсах)
 input int      MinClusterSize         = 3;              // Мин. кол-во экстремумов для формирования кластера
-input int      StrongMinTouches       = 5;              // Мин. касаний для значимого (сильного) уровня
-input bool     ShowOnlyStrongLevels   = true;           // Показывать только значимые уровни (убирает мусор)
+
+input group "=== Фильтры прореживания ==="
+input bool     RequireVolumeConfirmation = true;        // Только уровни с объёмом >80-го перцентиля
+input int      MinTouchCountForDisplay   = 3;           // Мин. касаний для отображения (2–10)
+input int      MaxLevelsToShow           = 6;           // Макс. уровней на тип (поддержка/сопротивление)
+input bool     EnableSpatialPruning      = true;        // Убирать близкие уровни, оставляя сильнейший
+input bool     IgnoreNearPriceLevels     = true;        // Не показывать уровни рядом с текущей ценой
+input bool     ShowStrengthPercent       = true;        // Показывать % актуальности рядом с уровнем
 
 input group "=== Фильтр объёма ==="
 input int      VolumeThresholdPercentile = 80;          // Процентиль объёма для верификации (60–95)
 input bool     UseTickVolume          = true;           // Использовать тиковый объём
 
 input group "=== Механизм старения ==="
-input int      BarsToLive             = 300;            // Баров жизни уровня после последнего касания
+input double   AgingMultiplier        = 1.0;            // Множитель времени жизни (0.5–3.0)
 input bool     AgingEnabled           = true;           // Включить удаление старых уровней
 
 input group "=== Визуализация ==="
@@ -37,9 +44,7 @@ input bool     ShowSupport            = true;           // Показывать 
 input bool     ShowResistance         = true;           // Показывать уровни сопротивления
 input color    SupportColor           = clrDodgerBlue;  // Цвет линий поддержки
 input color    ResistanceColor        = clrOrangeRed;   // Цвет линий сопротивления
-input int      LineStyle              = 1;              // Стиль линии (0=сплошная,1=пунктир,2=штрихпунктир)
 input int      LineWidth              = 1;              // Толщина линии
-input bool     ShowLevelStrength      = true;           // Показывать силу уровня текстом
 
 input group "=== Оптимизация ==="
 input int      RecalcIntervalTicks    = 200;            // Интервал полного пересчёта в тиках
@@ -52,7 +57,7 @@ struct SExtremum
    double   price;
    int      bar_index;
    long     volume;
-   bool     is_support;   // true = SUPPORT (минимум), false = RESISTANCE (максимум)
+   bool     is_support;
 };
 
 struct SLevel
@@ -64,53 +69,79 @@ struct SLevel
    bool     is_support;
    bool     is_strong;
    bool     is_active;
+   double   strength;
+   double   rating;
 };
 
 //+------------------------------------------------------------------+
 //| ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ                                             |
 //+------------------------------------------------------------------+
-string   g_prefix;              // Префикс имён объектов
-SLevel   g_levels[];            // Активные уровни
-int      g_tickCounter;         // Счётчик тиков
-int      g_prevCalculated;      // Предыдущее значение prev_calculated
-double   g_effectiveGap;        // Эффективный зазор в абсолютной цене (ClusterPriceGap * Point * 10)
+string   g_prefix;
+SLevel   g_levels[];
+int      g_tickCounter;
+int      g_prevCalculated;
+double   g_effectiveGap;
+int      g_barsToLive;
+long     g_volThreshold;
 
 //+------------------------------------------------------------------+
 //| Вспомогательные функции                                          |
 //+------------------------------------------------------------------+
 
-//--- Медиана массива
 double MedianOfArray(double &arr[])
 {
    int n = ArraySize(arr);
    if(n == 0) return 0.0;
    if(n == 1) return arr[0];
-   
    ArraySort(arr);
-   if(n % 2 == 1)
-      return arr[n / 2];
-   else
-      return (arr[n / 2 - 1] + arr[n / 2]) / 2.0;
+   if(n % 2 == 1) return arr[n / 2];
+   return (arr[n / 2 - 1] + arr[n / 2]) / 2.0;
 }
 
-//--- Процентиль объёма
 long GetVolumePercentile(SExtremum &extremums[], int percentile)
 {
    int n = ArraySize(extremums);
    if(n == 0) return 0;
-   
    long volumes[];
    ArrayResize(volumes, n);
-   for(int i = 0; i < n; i++)
-      volumes[i] = extremums[i].volume;
-   
+   for(int i = 0; i < n; i++) volumes[i] = extremums[i].volume;
    ArraySort(volumes);
    int idx = (int)MathFloor(percentile / 100.0 * (n - 1));
    return volumes[idx];
 }
 
+int GetBaseBarsForTF()
+{
+   ENUM_TIMEFRAMES tf = Period();
+   switch(tf)
+   {
+      case PERIOD_M1:  return 96;
+      case PERIOD_M2:  return 120;
+      case PERIOD_M3:  return 140;
+      case PERIOD_M4:  return 150;
+      case PERIOD_M5:  return 96;
+      case PERIOD_M6:  return 100;
+      case PERIOD_M10: return 120;
+      case PERIOD_M12: return 130;
+      case PERIOD_M15: return 160;
+      case PERIOD_M20: return 170;
+      case PERIOD_M30: return 160;
+      case PERIOD_H1:  return 168;
+      case PERIOD_H2:  return 140;
+      case PERIOD_H3:  return 130;
+      case PERIOD_H4:  return 126;
+      case PERIOD_H6:  return 120;
+      case PERIOD_H8:  return 110;
+      case PERIOD_H12: return 100;
+      case PERIOD_D1:  return 60;
+      case PERIOD_W1:  return 26;
+      case PERIOD_MN1: return 12;
+      default:         return 168;
+   }
+}
+
 //+------------------------------------------------------------------+
-//| Поиск локальных экстремумов                                      |
+//| Поиск экстремумов                                                |
 //+------------------------------------------------------------------+
 void FindExtremums(const double &high[], const double &low[],
                    const long &vol[], int rates_total,
@@ -118,15 +149,12 @@ void FindExtremums(const double &high[], const double &low[],
 {
    ArrayResize(extremums, 0);
    int total = 0;
-   
-   // Ищем экстремумы только на закрытых барах (не на текущем i=0)
    int start = ExtremaDepth;
    int end   = rates_total - ExtremaDepth - 1;
    if(end < start) return;
    
    for(int i = start; i <= end; i++)
    {
-      // Проверка локального максимума
       bool isMax = true;
       for(int j = 1; j <= ExtremaDepth; j++)
       {
@@ -144,7 +172,6 @@ void FindExtremums(const double &high[], const double &low[],
          continue;
       }
       
-      // Проверка локального минимума
       bool isMin = true;
       for(int j = 1; j <= ExtremaDepth; j++)
       {
@@ -164,28 +191,18 @@ void FindExtremums(const double &high[], const double &low[],
 }
 
 //+------------------------------------------------------------------+
-//| Кластеризация одного типа экстремумов                            |
+//| Кластеризация одного типа                                        |
 //+------------------------------------------------------------------+
 void ClusterOneType(SExtremum &arr[], bool isSupport, long volThreshold, SLevel &outLevels[])
 {
    int count = ArraySize(arr);
    if(count == 0) return;
    
-   // Сортируем по цене (простая сортировка пузырьком)
    for(int i = 0; i < count - 1; i++)
-   {
       for(int j = i + 1; j < count; j++)
-      {
          if(arr[i].price > arr[j].price)
-         {
-            SExtremum tmp = arr[i];
-            arr[i] = arr[j];
-            arr[j] = tmp;
-         }
-      }
-   }
+         { SExtremum tmp = arr[i]; arr[i] = arr[j]; arr[j] = tmp; }
    
-   // Кластеризация
    SLevel tmpLevels[];
    int lCount = 0;
    
@@ -196,25 +213,15 @@ void ClusterOneType(SExtremum &arr[], bool isSupport, long volThreshold, SLevel 
       {
          if(MathAbs(arr[i].price - tmpLevels[j].price) <= g_effectiveGap)
          {
-            // Обновляем кластер
             tmpLevels[j].touch_count++;
-            if(arr[i].volume > tmpLevels[j].max_volume)
-               tmpLevels[j].max_volume = arr[i].volume;
-            if(arr[i].bar_index > tmpLevels[j].last_touch_bar)
-               tmpLevels[j].last_touch_bar = arr[i].bar_index;
-            // Пересчитываем цену как медиану всех экстремумов в кластере
+            if(arr[i].volume > tmpLevels[j].max_volume) tmpLevels[j].max_volume = arr[i].volume;
+            if(arr[i].bar_index > tmpLevels[j].last_touch_bar) tmpLevels[j].last_touch_bar = arr[i].bar_index;
             double prices[];
             int pCount = 0;
             for(int k = 0; k < count; k++)
-            {
                if(MathAbs(arr[k].price - tmpLevels[j].price) <= g_effectiveGap)
-               {
-                  ArrayResize(prices, pCount + 1);
-                  prices[pCount++] = arr[k].price;
-               }
-            }
-            if(pCount > 0)
-               tmpLevels[j].price = MedianOfArray(prices);
+               { ArrayResize(prices, pCount + 1); prices[pCount++] = arr[k].price; }
+            if(pCount > 0) tmpLevels[j].price = MedianOfArray(prices);
             added = true;
             break;
          }
@@ -228,23 +235,19 @@ void ClusterOneType(SExtremum &arr[], bool isSupport, long volThreshold, SLevel 
          tmpLevels[lCount].max_volume     = arr[i].volume;
          tmpLevels[lCount].is_support     = isSupport;
          tmpLevels[lCount].is_active      = true;
+         tmpLevels[lCount].strength       = 0.0;
+         tmpLevels[lCount].rating         = 0.0;
          lCount++;
       }
    }
    
-   // Фильтрация: уровень считается значимым только при одновременном выполнении:
-   // 1) достаточно касаний (>= StrongMinTouches)
-   // 2) подтверждён объёмом (если UseTickVolume = true)
    for(int i = 0; i < lCount; i++)
    {
-      bool volOK  = !UseTickVolume || (tmpLevels[i].max_volume >= volThreshold);
-      bool countOK = tmpLevels[i].touch_count >= StrongMinTouches;
+      bool volOK  = !RequireVolumeConfirmation || !UseTickVolume || (tmpLevels[i].max_volume >= volThreshold);
+      bool countOK = tmpLevels[i].touch_count >= MinTouchCountForDisplay;
       tmpLevels[i].is_strong = volOK && countOK;
       
-      // Показываем либо все уровни с мин. касаниями, либо только сильные
-      bool showThis = ShowOnlyStrongLevels ? tmpLevels[i].is_strong
-                                           : (tmpLevels[i].touch_count >= MinClusterSize);
-      if(showThis)
+      if(countOK && (volOK || !RequireVolumeConfirmation))
       {
          int idx = ArraySize(outLevels);
          ArrayResize(outLevels, idx + 1);
@@ -254,7 +257,7 @@ void ClusterOneType(SExtremum &arr[], bool isSupport, long volThreshold, SLevel 
 }
 
 //+------------------------------------------------------------------+
-//| Кластеризация экстремумов                                        |
+//| Кластеризация                                                    |
 //+------------------------------------------------------------------+
 void ClusterExtremums(SExtremum &extremums[], SLevel &levels[])
 {
@@ -262,46 +265,194 @@ void ClusterExtremums(SExtremum &extremums[], SLevel &levels[])
    int n = ArraySize(extremums);
    if(n == 0) return;
    
-   // Вычисляем порог объёма
-   long volThreshold = GetVolumePercentile(extremums, VolumeThresholdPercentile);
+   g_volThreshold = GetVolumePercentile(extremums, VolumeThresholdPercentile);
    
-   // Разделяем на поддержки и сопротивления
    SExtremum supports[], resistances[];
    int sCount = 0, rCount = 0;
    for(int i = 0; i < n; i++)
    {
       if(extremums[i].is_support)
-      {
-         ArrayResize(supports, sCount + 1);
-         supports[sCount++] = extremums[i];
-      }
+      { ArrayResize(supports, sCount + 1); supports[sCount++] = extremums[i]; }
       else
-      {
-         ArrayResize(resistances, rCount + 1);
-         resistances[rCount++] = extremums[i];
-      }
+      { ArrayResize(resistances, rCount + 1); resistances[rCount++] = extremums[i]; }
    }
    
-   if(ShowSupport)    ClusterOneType(supports,    true,  volThreshold, levels);
-   if(ShowResistance) ClusterOneType(resistances, false, volThreshold, levels);
+   if(ShowSupport)    ClusterOneType(supports,    true,  g_volThreshold, levels);
+   if(ShowResistance) ClusterOneType(resistances, false, g_volThreshold, levels);
 }
 
 //+------------------------------------------------------------------+
-//| Удаление старых уровней (старение)                               |
+//| Расчёт силы уровня с экспоненциальным затуханием               |
+//+------------------------------------------------------------------+
+void CalculateLevelStrength(SLevel &lvls[], int current_bar)
+{
+   int n = ArraySize(lvls);
+   if(n == 0) return;
+   
+   double maxStrength = 0.0;
+   double lambda = 1.0 / (g_barsToLive / 2.0);
+   if(lambda <= 0) lambda = 0.001;
+   
+   for(int i = 0; i < n; i++)
+   {
+      if(!lvls[i].is_active) continue;
+      int t = current_bar - lvls[i].last_touch_bar;
+      if(t < 0) t = 0;
+      double baseStrength = lvls[i].touch_count * MathLog(1.0 + (double)lvls[i].max_volume / MathMax((double)g_volThreshold, 1.0));
+      lvls[i].strength = baseStrength * MathExp(-lambda * t);
+      if(lvls[i].strength > maxStrength) maxStrength = lvls[i].strength;
+   }
+   
+   // Уровни со слишком низкой силой деактивируем
+   for(int i = 0; i < n; i++)
+   {
+      if(!lvls[i].is_active) continue;
+      if(maxStrength > 0 && lvls[i].strength < 0.3 * maxStrength)
+         lvls[i].is_active = false;
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Рейтинг уровня                                                   |
+//+------------------------------------------------------------------+
+void CalculateRatings(SLevel &lvls[], int current_bar)
+{
+   int n = ArraySize(lvls);
+   if(n == 0) return;
+   
+   for(int i = 0; i < n; i++)
+   {
+      if(!lvls[i].is_active) continue;
+      double normVol = (double)lvls[i].max_volume / MathMax((double)g_volThreshold, 1.0);
+      if(normVol > 2.0) normVol = 2.0;
+      double recency = 1.0 - ((double)(current_bar - lvls[i].last_touch_bar) / MathMax((double)g_barsToLive, 1.0));
+      if(recency < 0.0) recency = 0.0;
+      lvls[i].rating = (lvls[i].touch_count * 0.4) + (normVol * 0.4) + (recency * 0.2);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Пространственное прореживание                                    |
+//+------------------------------------------------------------------+
+void SpatialPruning(SLevel &lvls[])
+{
+   if(!EnableSpatialPruning) return;
+   int n = ArraySize(lvls);
+   if(n == 0) return;
+   
+   double minGap = g_effectiveGap * 1.5;
+   
+   for(int i = 0; i < n; i++)
+   {
+      if(!lvls[i].is_active) continue;
+      for(int j = i + 1; j < n; j++)
+      {
+         if(!lvls[j].is_active) continue;
+         if(lvls[i].is_support != lvls[j].is_support) continue;
+         if(MathAbs(lvls[i].price - lvls[j].price) < minGap)
+         {
+            // Убираем более слабый
+            if(lvls[i].rating >= lvls[j].rating)
+               lvls[j].is_active = false;
+            else
+               lvls[i].is_active = false;
+         }
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Игнорирование уровней у текущей цены                             |
+//+------------------------------------------------------------------+
+void IgnoreNearPrice(SLevel &lvls[], double current_price)
+{
+   if(!IgnoreNearPriceLevels) return;
+   int n = ArraySize(lvls);
+   if(n == 0) return;
+   double threshold = g_effectiveGap * 0.5;
+   for(int i = 0; i < n; i++)
+      if(lvls[i].is_active && MathAbs(lvls[i].price - current_price) < threshold)
+         lvls[i].is_active = false;
+}
+
+//+------------------------------------------------------------------+
+//| Топ-N уровней                                                    |
+//+------------------------------------------------------------------+
+void KeepTopN(SLevel &lvls[])
+{
+   int n = ArraySize(lvls);
+   if(n == 0) return;
+   
+   // Собираем индексы поддержек и сопротивлений
+   int supIdx[], resIdx[];
+   int sCount = 0, rCount = 0;
+   for(int i = 0; i < n; i++)
+   {
+      if(!lvls[i].is_active) continue;
+      if(lvls[i].is_support)
+      { ArrayResize(supIdx, sCount + 1); supIdx[sCount++] = i; }
+      else
+      { ArrayResize(resIdx, rCount + 1); resIdx[rCount++] = i; }
+   }
+   
+   // Сортируем по рейтингу
+   for(int i = 0; i < sCount - 1; i++)
+      for(int j = i + 1; j < sCount; j++)
+         if(lvls[supIdx[i]].rating < lvls[supIdx[j]].rating)
+         { int tmp = supIdx[i]; supIdx[i] = supIdx[j]; supIdx[j] = tmp; }
+   
+   for(int i = 0; i < rCount - 1; i++)
+      for(int j = i + 1; j < rCount; j++)
+         if(lvls[resIdx[i]].rating < lvls[resIdx[j]].rating)
+         { int tmp = resIdx[i]; resIdx[i] = resIdx[j]; resIdx[j] = tmp; }
+   
+   // Оставляем только топ-N
+   for(int i = MaxLevelsToShow; i < sCount; i++)
+      lvls[supIdx[i]].is_active = false;
+   for(int i = MaxLevelsToShow; i < rCount; i++)
+      lvls[resIdx[i]].is_active = false;
+}
+
+//+------------------------------------------------------------------+
+//| Применение всех фильтров прореживания                            |
+//+------------------------------------------------------------------+
+void PruneLevels(SLevel &lvls[], int current_bar, double current_price)
+{
+   CalculateLevelStrength(lvls, current_bar);
+   CalculateRatings(lvls, current_bar);
+   SpatialPruning(lvls);
+   IgnoreNearPrice(lvls, current_price);
+   KeepTopN(lvls);
+}
+
+//+------------------------------------------------------------------+
+//| Старение                                                         |
 //+------------------------------------------------------------------+
 void ApplyAging(int current_bar)
 {
+   if(!AgingEnabled) return;
    int n = ArraySize(g_levels);
    for(int i = 0; i < n; i++)
    {
       if(!g_levels[i].is_active) continue;
-      if(AgingEnabled && (current_bar - g_levels[i].last_touch_bar) > BarsToLive)
+      if((current_bar - g_levels[i].last_touch_bar) > g_barsToLive)
          g_levels[i].is_active = false;
    }
 }
 
 //+------------------------------------------------------------------+
-//| Удаление всех графических объектов индикатора                    |
+//| Цвет с альфа-каналом                                             |
+//+------------------------------------------------------------------+
+color ColorWithAlpha(color clr, int alpha)
+{
+   int r = (int)((clr >> 16) & 0xFF);
+   int g = (int)((clr >> 8) & 0xFF);
+   int b = (int)(clr & 0xFF);
+   return (color)((alpha << 24) | (r << 16) | (g << 8) | b);
+}
+
+//+------------------------------------------------------------------+
+//| Удаление объектов                                                |
 //+------------------------------------------------------------------+
 void DeleteAllObjects()
 {
@@ -313,15 +464,12 @@ void DeleteAllObjects()
          ObjectDelete(0, name);
    }
 }
-
+   
 //+------------------------------------------------------------------+
-//| Отрисовка уровней с фильтром близости                            |
-//| Уровни сортируются по убыванию силы (touch_count).               |
-//| Если уровень ближе MinLevelGap к уже отрисованному — пропускается|
+//| Отрисовка уровней с разной прозрачностью/стилем                 |
 //+------------------------------------------------------------------+
 void DrawLevels(int current_bar)
 {
-   // Удаляем старые линии
    int total = ObjectsTotal(0, 0, -1);
    for(int i = total - 1; i >= 0; i--)
    {
@@ -329,110 +477,69 @@ void DrawLevels(int current_bar)
       if(StringFind(name, g_prefix + "LVL_") == 0 || StringFind(name, g_prefix + "TXT_") == 0)
          ObjectDelete(0, name);
    }
-   
+
    int n = ArraySize(g_levels);
-   if(n == 0) return;
-   
-   // Собираем индексы активных уровней
-   int indices[];
-   int activeCount = 0;
    for(int i = 0; i < n; i++)
    {
-      if(g_levels[i].is_active)
-      {
-         ArrayResize(indices, activeCount + 1);
-         indices[activeCount++] = i;
-      }
-   }
-   if(activeCount == 0) return;
-   
-   // Сортируем по убыванию touch_count (сильные первыми)
-   for(int i = 0; i < activeCount - 1; i++)
-   {
-      for(int j = i + 1; j < activeCount; j++)
-      {
-         if(g_levels[indices[i]].touch_count < g_levels[indices[j]].touch_count)
-         {
-            int tmp = indices[i];
-            indices[i] = indices[j];
-            indices[j] = tmp;
-         }
-      }
-   }
-   
-   // Минимальное расстояние между отображаемыми уровнями
-   double minGap = g_effectiveGap * 1.5;
-   
-   // Массивы для отслеживания уже отрисованных цен
-   double drawnSup[], drawnRes[];
-   int sDrawn = 0, rDrawn = 0;
-   
-   // Рисуем, пропуская слишком близкие
-   for(int k = 0; k < activeCount; k++)
-   {
-      int i = indices[k];
-      bool isSup = g_levels[i].is_support;
-      double price = g_levels[i].price;
+      if(!g_levels[i].is_active) continue;
       
-      // Проверяем близость к уже отрисованным уровням того же типа
-      bool tooClose = false;
-      if(isSup)
-      {
-         for(int d = 0; d < sDrawn; d++)
-            if(MathAbs(price - drawnSup[d]) < minGap) { tooClose = true; break; }
-      }
-      else
-      {
-         for(int d = 0; d < rDrawn; d++)
-            if(MathAbs(price - drawnRes[d]) < minGap) { tooClose = true; break; }
-      }
-      if(tooClose) continue;
-      
-      // Рисуем уровень
       string lineName = g_prefix + "LVL_" + IntegerToString(i);
       string txtName  = g_prefix + "TXT_" + IntegerToString(i);
-      color clr = isSup ? SupportColor : ResistanceColor;
+      
+      color baseClr = g_levels[i].is_support ? SupportColor : ResistanceColor;
+      
+      // Возраст как доля от BarsToLive
+      int age = current_bar - g_levels[i].last_touch_bar;
+      if(age < 0) age = 0;
+      double ageRatio = (double)age / MathMax((double)g_barsToLive, 1.0);
+      if(ageRatio > 1.0) ageRatio = 1.0;
+      
+      // Стиль и прозрачность в зависимости от возраста
+      ENUM_LINE_STYLE style = STYLE_SOLID;
+      int alpha = 255;
+      int width = LineWidth;
+      
+      if(ageRatio <= 0.3)
+      { style = STYLE_SOLID; alpha = 255; width = LineWidth + 1; }
+      else if(ageRatio <= 0.7)
+      { style = STYLE_DASH; alpha = 200; }
+      else
+      { style = STYLE_DOT; alpha = 128; width = 1; }
+      
+      color clr = ColorWithAlpha(baseClr, alpha);
       
       if(ObjectFind(0, lineName) < 0)
-         if(!ObjectCreate(0, lineName, OBJ_HLINE, 0, 0, price))
+         if(!ObjectCreate(0, lineName, OBJ_HLINE, 0, 0, g_levels[i].price))
             continue;
       
-      ObjectSetDouble(0, lineName, OBJPROP_PRICE, price);
+      ObjectSetDouble(0, lineName, OBJPROP_PRICE, g_levels[i].price);
       ObjectSetInteger(0, lineName, OBJPROP_COLOR, clr);
-      ObjectSetInteger(0, lineName, OBJPROP_STYLE, (ENUM_LINE_STYLE)LineStyle);
-      ObjectSetInteger(0, lineName, OBJPROP_WIDTH, LineWidth);
+      ObjectSetInteger(0, lineName, OBJPROP_STYLE, style);
+      ObjectSetInteger(0, lineName, OBJPROP_WIDTH, width);
       ObjectSetInteger(0, lineName, OBJPROP_SELECTABLE, false);
       ObjectSetInteger(0, lineName, OBJPROP_HIDDEN, true);
       
-      // Текст силы уровня
-      if(ShowLevelStrength)
+      // Текст
+      if(ShowLevelStrength || ShowStrengthPercent)
       {
-         string prefix = isSup ? "S" : "R";
-         string suffix = g_levels[i].is_strong ? "v" : "";
-         string txt = prefix + ":" + IntegerToString(g_levels[i].touch_count) + suffix;
+         string prefix = g_levels[i].is_support ? "S" : "R";
+         string txt = prefix + ":" + IntegerToString(g_levels[i].touch_count);
+         if(ShowStrengthPercent)
+         {
+            int pct = (int)((1.0 - ageRatio) * 100.0);
+            txt += " (" + IntegerToString(pct) + "%)";
+         }
          
          datetime timeRight = TimeCurrent() + PeriodSeconds() * 10;
          
          if(ObjectFind(0, txtName) < 0)
-            if(!ObjectCreate(0, txtName, OBJ_TEXT, 0, timeRight, price))
+            if(!ObjectCreate(0, txtName, OBJ_TEXT, 0, timeRight, g_levels[i].price))
                continue;
          
          ObjectSetString(0, txtName, OBJPROP_TEXT, txt);
          ObjectSetInteger(0, txtName, OBJPROP_COLOR, clr);
          ObjectSetInteger(0, txtName, OBJPROP_FONTSIZE, 8);
          ObjectSetInteger(0, txtName, OBJPROP_ANCHOR, ANCHOR_LEFT_LOWER);
-      }
-      
-      // Запоминаем отрисованную цену
-      if(isSup)
-      {
-         ArrayResize(drawnSup, sDrawn + 1);
-         drawnSup[sDrawn++] = price;
-      }
-      else
-      {
-         ArrayResize(drawnRes, rDrawn + 1);
-         drawnRes[rDrawn++] = price;
       }
    }
 }
@@ -445,11 +552,13 @@ int OnInit()
    g_prefix = "VVEC_";
    g_tickCounter = 0;
    g_prevCalculated = 0;
-
-   // Переводим пипсы в абсолютную цену (1 пипс = 10 * Point для 5/3 знаков)
+   
    g_effectiveGap = ClusterPriceGap * _Point * 10.0;
-   if(g_effectiveGap <= 0)
-      g_effectiveGap = _Point * 10.0; // защита: минимум 1 пипс
+   if(g_effectiveGap <= 0) g_effectiveGap = _Point * 10.0;
+   
+   int baseBars = GetBaseBarsForTF();
+   g_barsToLive = (int)(baseBars * AgingMultiplier);
+   if(g_barsToLive < 10) g_barsToLive = 10;
    
    ArrayResize(g_levels, 0);
    
@@ -484,44 +593,32 @@ int OnCalculate(const int       rates_total,
    bool fullRecalc = false;
    
    if(prev_calculated == 0)
-   {
-      fullRecalc = true;
-      g_tickCounter = 0;
-   }
+   { fullRecalc = true; g_tickCounter = 0; }
    else if(prev_calculated != g_prevCalculated)
-   {
-      // Новый бар
-      fullRecalc = true;
-      g_tickCounter = 0;
-   }
+   { fullRecalc = true; g_tickCounter = 0; }
    else
    {
       g_tickCounter++;
       if(g_tickCounter >= RecalcIntervalTicks)
-      {
-         fullRecalc = true;
-         g_tickCounter = 0;
-      }
+      { fullRecalc = true; g_tickCounter = 0; }
    }
    
    g_prevCalculated = prev_calculated;
    
    if(fullRecalc)
    {
-      // Полный пересчёт
       SExtremum extremums[];
       if(UseTickVolume)
          FindExtremums(high, low, tick_volume, rates_total, extremums);
       else
          FindExtremums(high, low, volume, rates_total, extremums);
       
-      // Сохраняем старые last_touch_bar для "омоложения"
       SLevel oldLevels[];
       ArrayCopy(oldLevels, g_levels);
       
       ClusterExtremums(extremums, g_levels);
       
-      // Омоложение: если новый кластер близок к старому уровню, обновляем last_touch_bar
+      // Омоложение
       int oldN = ArraySize(oldLevels);
       int newN = ArraySize(g_levels);
       for(int i = 0; i < newN; i++)
@@ -539,10 +636,11 @@ int OnCalculate(const int       rates_total,
       }
    }
    
-   // Применяем старение
    ApplyAging(0);
    
-   // Отрисовка
+   double currentPrice = (rates_total > 0) ? close[0] : 0.0;
+   PruneLevels(g_levels, 0, currentPrice);
+   
    DrawLevels(0);
    
    return(rates_total);
