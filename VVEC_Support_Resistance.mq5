@@ -520,7 +520,7 @@ void DrawLevels(int current_bar)
       ObjectSetInteger(0, lineName, OBJPROP_HIDDEN, true);
       
       // Текст
-      if(ShowLevelStrength || ShowStrengthPercent)
+      if(ShowStrengthPercent)
       {
          string prefix = g_levels[i].is_support ? "S" : "R";
          string txt = prefix + ":" + IntegerToString(g_levels[i].touch_count);
