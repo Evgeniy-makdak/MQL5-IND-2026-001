@@ -414,6 +414,30 @@ void KeepTopN(SLevel &lvls[])
 }
 
 //+------------------------------------------------------------------+
+//| Переключение роли уровней при пробое (Flip)                      |
+//+------------------------------------------------------------------+
+void FlipLevels(SLevel &lvls[], double current_price)
+{
+   int n = ArraySize(lvls);
+   if(n == 0) return;
+   
+   for(int i = 0; i < n; i++)
+   {
+      if(!lvls[i].is_active) continue;
+      
+      // Если цена ВЫШЕ уровня, который был сопротивлением (R)
+      // → он стал поддержкой (S) — цена отскочила от него снизу
+      if(!lvls[i].is_support && current_price > lvls[i].price)
+         lvls[i].is_support = true;
+      
+      // Если цена НИЖЕ уровня, который был поддержкой (S)
+      // → он стал сопротивлением (R) — цена отскочила от него сверху
+      if(lvls[i].is_support && current_price < lvls[i].price)
+         lvls[i].is_support = false;
+   }
+}
+
+//+------------------------------------------------------------------+
 //| Применение всех фильтров прореживания                            |
 //+------------------------------------------------------------------+
 void PruneLevels(SLevel &lvls[], int current_bar, double current_price)
@@ -439,7 +463,7 @@ void ApplyAging(int current_bar)
          g_levels[i].is_active = false;
    }
 }
-
+      
 //+------------------------------------------------------------------+
 //| Цвет с альфа-каналом                                             |
 //+------------------------------------------------------------------+
@@ -642,6 +666,7 @@ int OnCalculate(const int       rates_total,
    
    double currentPrice = (rates_total > 0) ? close[currentBar] : 0.0;
    PruneLevels(g_levels, currentBar, currentPrice);
+   FlipLevels(g_levels, currentPrice);
    
    DrawLevels(currentBar);
    
