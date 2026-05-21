@@ -198,6 +198,7 @@ void ClusterOneType(SExtremum &arr[], bool isSupport, long volThreshold, SLevel 
    int count = ArraySize(arr);
    if(count == 0) return;
    
+   // Сортируем по цене для стабильной кластеризации
    for(int i = 0; i < count - 1; i++)
       for(int j = i + 1; j < count; j++)
          if(arr[i].price > arr[j].price)
@@ -211,17 +212,18 @@ void ClusterOneType(SExtremum &arr[], bool isSupport, long volThreshold, SLevel 
       bool added = false;
       for(int j = 0; j < lCount; j++)
       {
+         // Проверяем, попадает ли экстремум в зазор от ЦЕНЫ КЛАСТЕРА
          if(MathAbs(arr[i].price - tmpLevels[j].price) <= g_effectiveGap)
          {
+            // Обновляем характеристики
             tmpLevels[j].touch_count++;
             if(arr[i].volume > tmpLevels[j].max_volume) tmpLevels[j].max_volume = arr[i].volume;
             if(arr[i].bar_index > tmpLevels[j].last_touch_bar) tmpLevels[j].last_touch_bar = arr[i].bar_index;
-            double prices[];
-            int pCount = 0;
-            for(int k = 0; k < count; k++)
-               if(MathAbs(arr[k].price - tmpLevels[j].price) <= g_effectiveGap)
-               { ArrayResize(prices, pCount + 1); prices[pCount++] = arr[k].price; }
-            if(pCount > 0) tmpLevels[j].price = MedianOfArray(prices);
+            
+            // Обновляем цену кластера как скользящее среднее — предотвращает "убегание" медианы
+            double prevSum = tmpLevels[j].price * (tmpLevels[j].touch_count - 1);
+            tmpLevels[j].price = (prevSum + arr[i].price) / tmpLevels[j].touch_count;
+            
             added = true;
             break;
          }
